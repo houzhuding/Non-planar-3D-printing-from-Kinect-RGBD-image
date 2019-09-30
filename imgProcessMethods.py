@@ -105,11 +105,13 @@ class ImgProcessMethods():
         scale_fac = 1
         contour_out = []
         contour_out_real = []
+        contour_model_out_real = np.array([[0,0],[0,0]])
         box = []
         center_transform = (1,1)
         frame = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
 
         img_rgb_out = frame.copy()
+        mask_black = frame.copy()
         # ##show needle region ##
         # if len(needle_location)==1:
         #     center = (int(needle_location[0][0]),int(needle_location[0][1]))
@@ -132,7 +134,9 @@ class ImgProcessMethods():
         xfac = 320/n
         yfac = 320/n
         Z = frame.reshape((-1,3))
-        # print(Z)
+
+
+        # classify the contour region by color using SVM
         labels = svm_clf.predict(Z)
         centers = [[255,0,0],[0,255,0],[0,0,255]]
 
@@ -205,6 +209,24 @@ class ImgProcessMethods():
                 # print(label)
                 img_rgb_out = cv2.warpPerspective(frame,M_img_cor,(w,2*h))
 
+                # classify the contour region by color thresholding
+                hsv = cv2.cvtColor(img_rgb_out,cv2.COLOR_RGB2HSV)
+                lower_gray = np.array([0,5,50],np.uint8)
+                upper_gray = np.array([179,50,255],np.uint8)
+                mask_black = cv2.inRange(hsv,lower_gray,upper_gray)
+                img_black = cv2.bitwise_and(img_rgb_out,img_rgb_out,mask=mask_black)
+                cnts_bk,hier =cv2.findContours(mask_black,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
+                if len(cnts_bk)>0:
+
+                    largest_areas_bk = sorted(cnts_bk,key=cv2.contourArea)
+                    epsilon = 0.001 * cv2.arcLength(largest_areas_bk[-2], True)
+                    approx = cv2.approxPolyDP(largest_areas_bk[-2], epsilon, True)
+                    approx_cnt_bk =  approx[:,0]
+                    # [pad:w-pad,pad:2*h-pad,:]
+                    cv2.drawContours(img_rgb_out, [approx_cnt_bk.astype(int)], -1, (255, 0, 0), 3)
+                    contour_model_out = approx_cnt_bk.astype(float)   
+
+
                 ##show transformed needle region ##
                 if len(needle_location)==1:
                     center = np.array([needle_location[0][0],needle_location[0][1],1])
@@ -220,35 +242,41 @@ class ImgProcessMethods():
 
                     ## convert the contour to the real scale
                     if len(contour_out)>2:
+
                         M = M_img_cor
                         xs = contour_out[::2,0] # downsample the contour
                         ys = contour_out[::2,1]
-                        
                         contour_out_real = np.array([
                             [((M[0][0]*xs[i]+M[0][1]*ys[i]+M[0][2])/(M[2][0]*xs[i]+M[2][1]*ys[i]+M[2][2])-x_trans),
                              ((M[1][0]*xs[i]+M[1][1]*ys[i]+M[1][2])/(M[2][0]*xs[i]+M[2][1]*ys[i]+M[2][2])-y_trans)]
                             for i in range(len(xs))])
 
-                        ### get the outbounded rectangle
-                        # contour_out_real_vec = np.array([[contour_out_real[i,:]] for i in range(len(contour_out_real))]) 
-                        # cntt = np.array([[-0.65,-0.56],[-100.55,-0.54],[0.678,100.98],[-100.5,-100.8]])
+                        ## get the outbounded rectangle
+                        contour_out_real_vec = np.array([[contour_out_real[i,:]] for i in range(len(contour_out_real))]) 
+                        cntt = np.array([[-0.65,-0.56],[-100.55,-0.54],[0.678,100.98],[-100.5,-100.8]])
                         # print(cntt)
 
                         fac = 0.3
+                        # scale the print contour to real 
                         cnt_center = np.mean(contour_out_real,axis=0)
-
                         # approx_cnt = np.append(approx_cnt,[cnt_center,[1,1],[640,1],[640,480],[1,480]],axis=0)
                         contour_out_real = np.transpose(np.array([(contour_out_real[:,0]-cnt_center[0])*fac+cnt_center[0]*fac
                         ,(contour_out_real[:,1]-cnt_center[1])*fac+cnt_center[1]*fac]))
 
                         rect = cv2.minAreaRect(contour_out_real.astype(int))
                         box = cv2.boxPoints(rect)
-                        # print(max(contour_out_real[:,0])-min(contour_out_real[:,0]))
-                        # print(max(contour_out_real[:,1])-min(contour_out_real[:,1]))
-                        # print(contour_out_real)
-                        # cv2.drawContours(img_rgb_out, [contour_out_real.astype(int)], -1, (0, 0, 255), 5)
 
-                        # print(contour_out,contour_out_real)               
+                        # scale the model contour to real
+                        cnt_model_center = np.mean(contour_model_out,axis=0)
+                        # print(x_trans,y_trans,cnt_model_center)
+                        contour_model_out[:,0]-=x_trans
+                        contour_model_out[:,1]-=y_trans
+                        contour_model_out_real = np.transpose(np.array([(contour_model_out[:,0]-cnt_model_center[0])*fac+cnt_model_center[0]*fac
+                        ,(contour_model_out[:,1]-cnt_model_center[1])*fac+cnt_model_center[1]*fac]))
+
+
+
+
                 # else:
                 # if M_img_cor_old is not None:
                     # img_rgb_out = cv2.warpPerspective(frame,M_img_cor_old,(w,2*h))
@@ -265,7 +293,7 @@ class ImgProcessMethods():
             
         img_rgb_out_pil = cv2.resize(img_rgb_out,None,fx=xfac,fy=yfac)
         img_rgb_out = ImageTk.PhotoImage(image=Image.fromarray(img_rgb_out_pil))
-        return img_rgb_out,center_transform,contour_out_real,box
+        return img_rgb_out,center_transform,contour_out_real,box,contour_model_out_real,mask_black
 
     def ContourExtractSVM(self,img_rgb,count):
         dst = cv2.cvtColor(img_rgb,cv2.COLOR_BGR2RGB)
